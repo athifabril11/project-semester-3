@@ -1,0 +1,268 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\CartItem;
+use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\Pengiriman;
+use App\Models\Product;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Throwable;
+
+class CheckoutService
+{
+    public function __construct(
+        protected MidtransService $midtransService,
+        protected CartService $cartService
+    ) {}
+
+    /**
+     * Prepare cart items for the checkout page.
+     * Selects all items if no item is currently selected.
+     *
+     * @return Collection<int, CartItem>
+     */
+    public function prepareCheckoutItems(): Collection
+    {
+        $this->cartService->consolidateGuestCart();
+
+        $cartItems = CartItem::with('produk')
+            ->forCurrentVisitor()
+            ->where('selected', true)
+            ->latest()
+            ->get();
+
+        if ($cartItems->isEmpty()) {
+            $allCartItems = CartItem::with('produk')
+                ->forCurrentVisitor()
+                ->latest()
+                ->get();
+
+            if ($allCartItems->isEmpty()) {
+                return new Collection;
+            }
+
+            CartItem::forCurrentVisitor()->update(['selected' => true]);
+
+            return $allCartItems;
+        }
+
+        return $cartItems;
+    }
+
+    /**
+     * Validate that each item has sufficient stock for its size.
+     *
+     * @param  Collection<int, CartItem>  $cartItems
+     * @return array<int, string> List of unavailable item messages
+     */
+    public function validateItemsStock(Collection $cartItems): array
+    {
+        $unavailable = [];
+
+        foreach ($cartItems as $item) {
+            if ($item->produk) {
+                $stock = $item->produk->getStokForUkuran($item->ukuran);
+                if ($stock < $item->qty) {
+                    $sizeLabel = $item->ukuran ? " (Ukuran {$item->ukuran})" : '';
+                    $unavailable[] = $item->produk->nama.$sizeLabel." (sisa {$stock})";
+                }
+            }
+        }
+
+        return $unavailable;
+    }
+
+    /**
+     * Calculate subtotal, voucher discount, shipping, and grand total.
+     *
+     * @param  Collection<int, CartItem>  $cartItems
+     * @return array{
+     *     subtotal: float,
+     *     discount: float,
+     *     shipping: float,
+     *     grand_total: float
+     * }
+     */
+    public function calculateOrderTotals(Collection $cartItems, ?string $voucher = null, ?float $shippingCost = null, ?User $user = null): array
+    {
+        $subtotal = 0.0;
+        foreach ($cartItems as $item) {
+            $price = $item->produk ? (float) $item->produk->harga : 0.0;
+            $subtotal += ($price * $item->qty);
+        }
+
+        $discount = 0.0;
+        $voucherInput = strtoupper(trim((string) $voucher));
+        if (in_array($voucherInput, ['SIRKULAR50K', 'LESTARI50K', 'LESTARICAPSULE'], true) && $subtotal >= 200000) {
+            $alreadyUsed = false;
+            if ($user && $user->exists) {
+                $alreadyUsed = Order::where('user_id', $user->id)
+                    ->where('address', 'like', "%[Voucher: {$voucherInput}]%")
+                    ->whereNotIn('status', [Order::STATUS_CANCELLED, 'Dibatalkan'])
+                    ->exists();
+            }
+
+            if (! $alreadyUsed) {
+                $discount = 50000.0;
+            }
+        }
+
+        $isFreeShipping = ($subtotal >= 955000);
+
+        if ($isFreeShipping) {
+            $shipping = 0.0;
+        } else {
+            // Guard against manipulated shipping costs below safe minimum (e.g. 0 or negative)
+            if ($shippingCost !== null && $shippingCost >= 5000) {
+                $shipping = min((float) $shippingCost, 5000000.0);
+            } else {
+                $shipping = 20000.0;
+            }
+        }
+
+        $grandTotal = max(0.0, $subtotal - $discount + $shipping);
+
+        return [
+            'subtotal' => $subtotal,
+            'discount' => $discount,
+            'shipping' => $shipping,
+            'grand_total' => $grandTotal,
+            'voucher' => $discount > 0 ? $voucherInput : null,
+        ];
+    }
+
+    /**
+     * Automatically synchronize default address if user doesn't have one saved yet.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    public function syncDefaultAddress(User $user, array $validated, ?string $city = null, ?string $province = null, ?string $postalCode = null, ?int $cityId = null, ?int $provinceId = null): void
+    {
+        if ($user->alamats()->count() === 0 && ! empty($validated['address'])) {
+            try {
+                $user->alamats()->create([
+                    'label_alamat' => 'Alamat Utama',
+                    'penerima' => $validated['customer_name'],
+                    'no_telepon' => $validated['phone'],
+                    'alamat_lengkap' => $validated['address'],
+                    'kota' => $city ?: 'Indonesia',
+                    'provinsi' => $province ?: 'Indonesia',
+                    'city_id' => $cityId,
+                    'province_id' => $provinceId,
+                    'kode_pos' => $postalCode ?: '',
+                    'is_utama' => true,
+                ]);
+            } catch (Throwable $e) {
+                // Jangan batalkan checkout jika sinkronisasi alamat gagal
+            }
+        }
+    }
+
+    /**
+     * Create the order, items, deduct inventory per size, and clean cart within a transaction.
+     *
+     * @param  array<string, mixed>  $validated
+     * @param  Collection<int, CartItem>  $cartItems
+     */
+    public function createOrder(User $user, array $validated, Collection $cartItems, float $grandTotal, float $shipping, ?string $appliedVoucher = null): Order
+    {
+        do {
+            $orderCode = 'ORD-'.date('Ymd').'-'.strtoupper(Str::random(6));
+        } while (Order::where('code', $orderCode)->exists());
+
+        $shippingOption = $validated['shipping_option'] ?? 'JNE Reguler';
+
+        return DB::transaction(function () use ($user, $validated, $cartItems, $grandTotal, $orderCode, $shippingOption, $shipping, $appliedVoucher) {
+            $notesText = ! empty($validated['notes']) ? ' (Catatan: '.$validated['notes'].')' : '';
+            $voucherTag = ! empty($appliedVoucher) ? ' [Voucher: '.$appliedVoucher.']' : '';
+            $fullAddress = $validated['address'].$notesText.$voucherTag.' [Kurir: '.$shippingOption.']';
+
+            // Lock and re-validate stock for each unique product to prevent race conditions / overselling
+            $lockedProducts = [];
+            foreach ($cartItems as $item) {
+                if ($item->produk_id) {
+                    if (! isset($lockedProducts[$item->produk_id])) {
+                        /** @var Product|null $product */
+                        $product = Product::whereKey($item->produk_id)->lockForUpdate()->first();
+                        if (! $product) {
+                            throw new \InvalidArgumentException("Produk tidak ditemukan untuk item ID {$item->produk_id}.");
+                        }
+                        $lockedProducts[$item->produk_id] = $product;
+                    }
+
+                    $product = $lockedProducts[$item->produk_id];
+                    $availableStock = $product->getStokForUkuran($item->ukuran);
+                    if ($availableStock < $item->qty) {
+                        $sizeNotice = $item->ukuran ? " (Ukuran {$item->ukuran})" : '';
+                        throw new \InvalidArgumentException("Stok {$product->nama}{$sizeNotice} tidak mencukupi (tersedia: {$availableStock}).");
+                    }
+                }
+            }
+
+            $order = Order::create([
+                'user_id' => $user->id,
+                'code' => $orderCode,
+                'customer_name' => $validated['customer_name'],
+                'phone' => $validated['phone'],
+                'address' => $fullAddress,
+                'total_price' => $grandTotal,
+                'shipping_cost' => $shipping,
+                'payment_method' => $validated['payment_method'] ?? 'Midtrans Gateway',
+                'status' => 'Menunggu Pembayaran',
+                'payment_status' => Order::PAYMENT_PENDING,
+            ]);
+
+            foreach ($cartItems as $item) {
+                $product = $lockedProducts[$item->produk_id] ?? $item->produk;
+                if ($product) {
+                    $itemPrice = (float) $product->harga;
+                    OrderItem::create([
+                        'order_id' => $order->id,
+                        'produk_id' => $product->id,
+                        'produk_name' => $product->nama.($item->ukuran ? ' ('.$item->ukuran.')' : ''),
+                        'price' => $itemPrice,
+                        'quantity' => $item->qty,
+                        'subtotal' => $itemPrice * $item->qty,
+                    ]);
+
+                    $product->decrementStokForUkuran($item->ukuran, $item->qty);
+                }
+
+                $item->delete();
+            }
+
+            Pengiriman::create([
+                'order_id' => $order->id,
+                'ekspedisi' => $shippingOption,
+                'status_pengiriman' => 'Menunggu Pengiriman',
+            ]);
+
+            return $order;
+        });
+    }
+
+    /**
+     * Safely request a Midtrans Snap transaction token for the order.
+     */
+    public function createSnapToken(Order $order): ?string
+    {
+        try {
+            $snapData = $this->midtransService->createSnapTransaction($order);
+
+            return $snapData['token'] ?? null;
+        } catch (Throwable $e) {
+            Log::warning('Midtrans Snap token gagal dibuat saat checkout', [
+                'order_code' => $order->code,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+}

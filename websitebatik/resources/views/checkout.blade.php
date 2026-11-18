@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}" class="scroll-smooth">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Selesaikan Pembayaran - Hamzah Style Official</title>
+    <meta name="description" content="Selesaikan pembayaran pesanan busana batik autentik ramah lingkungan di Hamzah Style Official dengan metode pembayaran aman dan terenkripsi.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Styles & Scripts -->
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+
+    <!-- Midtrans Snap (popup bawaan Midtrans) -->
+    <script src="{{ config('midtrans.snap_js_url') }}" data-client-key="{{ config('midtrans.client_key') }}"></script>
+
+    <style>
+        [x-cloak] { display: none !important; }
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #FAF7F2;
+            color: #26211D;
+        }
+        .font-serif-title {
+            font-family: 'Playfair Display', serif;
+        }
+    </style>
+</head>
+<body class="antialiased bg-[#FAF7F2] text-[#26211D] min-h-screen selection:bg-[#B58742] selection:text-white"
+      x-init="fetchRajaOngkirCosts()"
+      x-data="{
+          mobileMenuOpen: false,
+          userMenu: false,
+          searchModal: false,
+          editAddressModal: false,
+          modalView: 'list', // 'list' or 'form'
+          formMode: 'add',   // 'add' or 'edit'
+          editingAddressId: null,
+          modalSaving: false,
+          toastMessage: '',
+          isSubmitting: false,
+
+          showToast(msg) {
+              this.toastMessage = msg;
+              setTimeout(() => { this.toastMessage = ''; }, 3500);
+          },
+
+@php
+    $defaultAlamat = (isset($alamats) && $alamats->isNotEmpty()) 
+        ? ($alamats->where('is_utama', true)->first() ?: $alamats->first())
+        : null;
+@endphp
+          // Customer & Shipping Address State
+          addressData: {
+              id: {{ $defaultAlamat ? $defaultAlamat->id : 'null' }},
+              recipient: '{{ $defaultAlamat ? addslashes($defaultAlamat->penerima) : (Auth::check() ? addslashes(Auth::user()->name) : '') }}',
+              label: '{{ $defaultAlamat ? addslashes($defaultAlamat->label_alamat) : 'Rumah' }}',
+              phone: '{{ $defaultAlamat ? addslashes($defaultAlamat->no_telepon) : (Auth::check() && Auth::user()->phone ? addslashes(Auth::user()->phone) : '') }}',
+              address: '{{ $defaultAlamat ? addslashes($defaultAlamat->alamat_lengkap) : '' }}',
+              city: '{{ $defaultAlamat ? addslashes($defaultAlamat->kota ?? '') : '' }}',
+              cityId: '{{ $defaultAlamat ? ($defaultAlamat->city_id ?? '') : '' }}',
+              province: '{{ $defaultAlamat ? addslashes($defaultAlamat->provinsi ?? '') : '' }}',
+              provinceId: '{{ $defaultAlamat ? ($defaultAlamat->province_id ?? '') : '' }}',
+              postalCode: '{{ $defaultAlamat ? addslashes($defaultAlamat->kode_pos ?? '') : '' }}',
+              isUtama: {{ $defaultAlamat && $defaultAlamat->is_utama ? 'true' : 'false' }},
+              hasAddress: {{ $defaultAlamat ? 'true' : 'false' }}
+          },
+
+          selectedAddressId: {{ $defaultAlamat ? $defaultAlamat->id : 'null' }},
+
+          get fullAddress() {
+              if (!this.addressData.address) return '';
+              let parts = [this.addressData.address];
+              const city = (this.addressData.city || '').trim();
+              const prov = (this.addressData.province || '').trim();
+              const post = (this.addressData.postalCode || '').trim();
+              
+              const lowerAddr = this.addressData.address.toLowerCase();
+              if (city && !lowerAddr.includes(city.toLowerCase())) parts.push(city);
+              if (prov && !lowerAddr.includes(prov.toLowerCase())) parts.push(prov);
+              if (post && !lowerAddr.includes(post.toLowerCase())) parts.push(post);
+              return parts.join(', ');
+          },
+
+          // Alamat tersimpan customer untuk dipilih
+          savedAddresses: [
+              @if(isset($alamats) && $alamats->isNotEmpty())
+                  @foreach($alamats as $alm)
+                  {
+                      id: {{ $alm->id }},
+                      label: '{{ addslashes($alm->label_alamat) }}',
+                      penerima: '{{ addslashes($alm->penerima) }}',
+                      phone: '{{ addslashes($alm->no_telepon) }}',
+                      address: '{{ addslashes($alm->alamat_lengkap) }}',
+                      city: '{{ addslashes($alm->kota ?? '') }}',
+                      cityId: '{{ $alm->city_id ?? '' }}',
+                      province: '{{ addslashes($alm->provinsi ?? '') }}',
+                      provinceId: '{{ $alm->province_id ?? '' }}',
+                      postalCode: '{{ addslashes($alm->kode_pos ?? '') }}',
+                      isUtama: {{ $alm->is_utama ? 'true' : 'false' }}
+                  }@if(!$loop->last),@endif
+                  @endforeach
+              @endif
+          ],
+
+          selectAddress(id) {
+              const picked = this.savedAddresses.find(a => a.id === Number(id));
+              if (!picked) return;
+              this.selectedAddressId = picked.id;
+              this.addressData.id = picked.id;
+              this.addressData.recipient = picked.penerima;
+              this.addressData.label = picked.label || 'Rumah';
+              this.addressData.phone = picked.phone;
+              this.addressData.address = picked.address;
+              this.addressData.city = picked.city;
+              this.addressData.cityId = picked.cityId || '';
+              this.addressData.province = picked.province || '';
+              this.addressData.provinceId = picked.provinceId || '';
+              this.addressData.postalCode = picked.postalCode || '';
+              this.addressData.isUtama = picked.isUtama;
+              this.addressData.hasAddress = true;
+              this.fetchRajaOngkirCosts();
+          },
+
+          tempAddress: {
+              label: '',
+              recipient: '',
+              phone: '',
+              city: '',
+              cityId: '',
+              province: '',
+              provinceId: '',
+              postalCode: '',
+              address: '',
+              isUtama: false
+          },
+
+          provincesList: [],
+          citiesList: [],
+          loadingProvinces: false,
+          loadingCities: false,
+
+          async loadProvincesForCheckout() {
+              if (this.provincesList.length > 0) return;
+              this.loadingProvinces = true;
+              try {
+                  const res = await fetch('{{ route('rajaongkir.provinces') }}');
+                  const data = await res.json();
+                  if (data.success && Array.isArray(data.provinces)) {
+                      this.provincesList = data.provinces;
+                  }
+              } catch (e) {
+                  console.error('Failed loading provinces', e);
+              } finally {
+                  this.loadingProvinces = false;
+              }
+          },
+
+          async loadCitiesForCheckout(provinceId) {
+              if (!provinceId) {
+                  this.citiesList = [];
+                  return;
+              }
+              this.loadingCities = true;
+              try {
+                  const res = await fetch('{{ route('rajaongkir.cities') }}?province_id=' + provinceId);
+                  const data = await res.json();
+                  if (data.success && Array.isArray(data.cities)) {
+                      this.citiesList = data.cities;
+                  }
+              } catch (e) {
+                  console.error('Failed loading cities', e);
+              } finally {
+                  this.loadingCities = false;
+              }
+          },
+
+          async onCheckoutProvinceChange() {
+              const selected = this.provincesList.find(p => String(p.province_id) === String(this.tempAddress.provinceId));
+              this.tempAddress.province = selected ? selected.province : '';
+              this.tempAddress.cityId = '';
+              this.tempAddress.city = '';
+              await this.loadCitiesForCheckout(this.tempAddress.provinceId);
+          },
+
+          onCheckoutCityChange() {
+              const selected = this.citiesList.find(c => String(c.city_id) === String(this.tempAddress.cityId));
+              if (selected) {
+                  const prefix = selected.type ? selected.type + ' ' : '';
+                  this.tempAddress.city = prefix + selected.city_name;
+                  if (selected.postal_code && !this.tempAddress.postalCode) {
+                      this.tempAddress.postalCode = selected.postal_code;
+                  }
+              }
+          },
+
+          openEditAddress() {
+              if (this.savedAddresses.length === 0) {
+                  this.openAddAddress();
+              } else {
+                  this.modalView = 'list';
+                  this.editAddressModal = true;
+              }
+          },
+
+          async openAddAddress() {
+              this.modalView = 'form';
+              this.formMode = 'add';
+              this.editingAddressId = null;
+              this.tempAddress = {
+                  label: 'Rumah',
+                  recipient: '{{ Auth::check() ? addslashes(Auth::user()->name) : '' }}',
+                  phone: '{{ Auth::check() && Auth::user()->phone ? addslashes(Auth::user()->phone) : '' }}',
+                  city: '',
+                  cityId: '',
+                  province: '',
+                  provinceId: '',
+                  postalCode: '',
+                  address: '',
+                  isUtama: false
+              };
+              this.editAddressModal = true;
+              await this.loadProvincesForCheckout();
+          },
+
+          async openEditSingleAddress(addr) {
+              this.modalView = 'form';
+              this.formMode = 'edit';
+              this.editingAddressId = addr.id;
+              this.tempAddress = {
+                  label: addr.label || 'Rumah',
+                  recipient: addr.penerima,
+                  phone: addr.phone,
+                  city: addr.city,
+                  cityId: addr.cityId || '',
+                  province: addr.province || '',
+                  provinceId: addr.provinceId || '',
+                  postalCode: addr.postalCode || '',
+                  address: addr.address,
+                  isUtama: addr.isUtama
+              };
+              this.editAddressModal = true;
+              await this.loadProvincesForCheckout();
+              if (this.tempAddress.provinceId) {
+                  await this.loadCitiesForCheckout(this.tempAddress.provinceId);
+              }
+          },
+
+          saveAddress() {
+              const recipient = (this.tempAddress.recipient || '').trim();
+              const phone = (this.tempAddress.phone || '').trim();
+              const address = (this.tempAddress.address || '').trim();
+              const city = (this.tempAddress.city || '').trim();
+              const label = (this.tempAddress.label || '').trim() || 'Rumah';
+              const province = (this.tempAddress.province || '').trim();
+              const postalCode = (this.tempAddress.postalCode || '').trim();
+              const isUtama = !!this.tempAddress.isUtama;
+
+              if (!recipient || !phone || !address || !city) {
+                  this.showToast('Mohon lengkapi Nama Penerima, No HP, Kota, dan Alamat Lengkap');
+                  return;
+              }
+
+              if (phone.length < 10 || phone.length > 20) {
+                  this.showToast('Nomor WhatsApp / HP harus berupa 10 - 20 digit');
+                  return;
+              }
+
+              if (postalCode && postalCode.length !== 5) {
+                  this.showToast('Kode pos harus berupa 5 digit angka');
+                  return;
+              }
+
+              this.modalSaving = true;
+              const isEdit = this.formMode === 'edit' && this.editingAddressId;
+              const url = isEdit ? '{{ url('/alamat') }}/' + this.editingAddressId : '{{ route('alamat.store') }}';
+              const method = isEdit ? 'PUT' : 'POST';
+
+              const payload = {
+                  label_alamat: label,
+                  penerima: recipient,
+                  no_telepon: phone,
+                  kota: city,
+                  provinsi: province || null,
+                  province_id: this.tempAddress.provinceId ? parseInt(this.tempAddress.provinceId) : null,
+                  city_id: this.tempAddress.cityId ? parseInt(this.tempAddress.cityId) : null,
+                  kode_pos: postalCode || null,
+                  alamat_lengkap: address,
+                  is_utama: isUtama
+              };
+
+              fetch(url, {
+                  method: method,
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                      'Accept': 'application/json'
+                  },
+                  body: JSON.stringify(payload)
+              })
+              .then(async res => {
+                  this.modalSaving = false;
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                      const msg = (data.errors ? Object.values(data.errors).flat()[0] : null) || data.message || 'Gagal menyimpan alamat.';
+                      this.showToast(msg);
+                      return;
+                  }
+
+                  if (data.success && data.alamat) {
+                      const savedObj = {
+                          id: data.alamat.id,
+                          label: data.alamat.label_alamat,
+                          penerima: data.alamat.penerima,
+                          phone: data.alamat.no_telepon,
+                          address: data.alamat.alamat_lengkap,
+                          city: data.alamat.kota,
+                          cityId: data.alamat.city_id || '',
+                          province: data.alamat.provinsi || '',
+                          provinceId: data.alamat.province_id || '',
+                          postalCode: data.alamat.kode_pos || '',
+                          isUtama: !!data.alamat.is_utama
+                      };
+
+                      if (isEdit) {
+                          const idx = this.savedAddresses.findIndex(a => a.id === savedObj.id);
+                          if (idx !== -1) {
+                              this.savedAddresses[idx] = savedObj;
+                          }
+
+                          if (savedObj.isUtama) {
+                              this.savedAddresses.forEach(a => {
+                                  if (a.id !== savedObj.id) a.isUtama = false;
+                              });
+                          }
+
+                          if (this.selectedAddressId === savedObj.id) {
+                              this.selectAddress(savedObj.id);
+                          }
+                          this.editAddressModal = false;
+                          this.modalView = 'list';
+                          this.showToast('Alamat pengiriman berhasil diperbarui!');
+                      } else {
+                          this.savedAddresses.unshift(savedObj);
+
+                          if (savedObj.isUtama) {
+                              this.savedAddresses.forEach(a => {
+                                  if (a.id !== savedObj.id) a.isUtama = false;
+                              });
+                          }
+
+                          // Alamat baru tidak langsung dipake; kembali ke daftar alamat
+                          this.modalView = 'list';
+                          this.showToast('Alamat baru berhasil ditambahkan.');
+                      }
+                  }
+              })
+              .catch(() => {
+                  this.modalSaving = false;
+                  this.showToast('Terjadi kendala jaringan saat menyimpan alamat.');
+              });
+          },
+
+          setPrimaryAddress(id) {
+              fetch('{{ url('/alamat') }}/' + id + '/default', {
+                  method: 'PATCH',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                      'Accept': 'application/json'
+                  }
+              })
+              .then(res => res.json())
+              .then(data => {
+                  if (data.success) {
+                      this.savedAddresses.forEach(a => {
+                          a.isUtama = (a.id === id);
+                      });
+                      if (this.selectedAddressId === id) {
+                          this.addressData.isUtama = true;
+                      }
+                      this.showToast('Alamat utama berhasil diubah.');
+                  }
+              })
+              .catch(() => {
+                  this.showToast('Gagal mengubah alamat utama.');
+              });
+          },
+
+          deleteAddress(id) {
+              if (!confirm('Hapus alamat ini dari daftar tersimpan?')) return;
+              fetch('{{ url('/alamat') }}/' + id, {
+                  method: 'DELETE',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                      'Accept': 'application/json'
+                  }
+              })
+              .then(res => res.json())
+              .then(data => {
+                  if (data.success) {
+                      this.savedAddresses = this.savedAddresses.filter(a => a.id !== id);
+                      if (this.selectedAddressId === id) {
+                          if (this.savedAddresses.length > 0) {
+                              this.selectAddress(this.savedAddresses[0].id);
+                          } else {
+                              this.addressData.id = null;
+                              this.addressData.recipient = '{{ Auth::check() ? addslashes(Auth::user()->name) : '' }}';
+                              this.addressData.label = '';
+                              this.addressData.phone = '{{ Auth::check() && Auth::user()->phone ? addslashes(Auth::user()->phone) : '' }}';
+                              this.addressData.address = '';
+                              this.addressData.city = '';
+                              this.addressData.province = '';
+                              this.addressData.postalCode = '';
+                              this.addressData.isUtama = false;
+                              this.addressData.hasAddress = false;
+                              this.selectedAddressId = null;
+                          }
+                      }
+                      this.showToast('Alamat berhasil dihapus.');
+                  }
+              })
+              .catch(() => {
+                  this.showToast('Gagal menghapus alamat.');
+              });
+          },
+
+          // Selected Items in Checkout
+          items: [
+              @if(isset($cartItems) && $cartItems->isNotEmpty())
+                  @foreach($cartItems as $item)
+                  @php
+                      $prod = $item->produk;
+                      $imgUrl = $prod ? $prod->gambar_url : asset('images/beranda/folded-shirts.jpg');
+                      $kategori = $prod ? $prod->kategori : 'Koleksi Batik';
+                      $nama = $prod ? $prod->nama : 'Busana Batik Nusantara';
+                      $harga = $prod ? (float)$prod->harga : 0;
+                  @endphp
+                  {
+                      id: {{ $item->id }},
+                      produk_id: {{ $prod ? $prod->id : 'null' }},
+                      nama: '{{ addslashes($nama) }}',
+                      kategori: '{{ addslashes($kategori) }}',
+                      ukuran: '{{ $item->ukuran ?? 'All Size' }}',
+                      varian: '{{ addslashes($item->varian ?? ('Ukuran: ' . ($item->ukuran ?? 'L'))) }}',
+                      qty: {{ $item->qty }},
+                      harga: {{ $harga }},
+                      gambar: '{{ $imgUrl }}'
+                  },
+                  @endforeach
+              @endif
+          ],
+
+          // RajaOngkir Shipping State & Selection
+          shippingServices: [
+              { code: 'JNE', name: 'Jalur Nugraha Ekakurir (JNE)', service: 'REG', description: 'Layanan Reguler', cost: 20000, etd: '1-2 hari' },
+              { code: 'JNE', name: 'Jalur Nugraha Ekakurir (JNE)', service: 'YES', description: 'Yakin Esok Sampai', cost: 32000, etd: '1 hari' },
+              { code: 'POS', name: 'POS Indonesia (POS)', service: 'Pos Reguler', description: 'Pos Reguler Domestik', cost: 18000, etd: '2-3 hari' },
+              { code: 'TIKI', name: 'Citra Van Titipan Kilat (TIKI)', service: 'REG', description: 'Regular Service', cost: 19000, etd: '2 hari' }
+          ],
+          selectedShippingKey: 'JNE-REG',
+          loadingShipping: false,
+          courierFilter: 'all',
+          isRajaOngkirLive: false,
+
+          get filteredShippingServices() {
+              if (this.courierFilter === 'all') {
+                  return this.shippingServices;
+              }
+              return this.shippingServices.filter(s => s.code.toUpperCase() === this.courierFilter.toUpperCase());
+          },
+
+          get selectedShippingService() {
+              const found = this.shippingServices.find(s => (s.code + '-' + s.service) === this.selectedShippingKey);
+              return found || this.shippingServices[0] || null;
+          },
+
+          // Pembayaran: seluruh transaksi via Midtrans (metode dipilih di popup Snap).
+          paymentMethodName: 'Midtrans Gateway',
+
+          // Notes for seller
+          sellerNotes: '',
+
+          // Calculations
+          get totalItemQty() {
+              return this.items.reduce((sum, item) => sum + item.qty, 0);
+          },
+
+          get rawSubtotal() {
+              return this.items.reduce((sum, item) => sum + (item.harga * item.qty), 0);
+          },
+
+          get totalWeightGrams() {
+              return Math.max(1000, this.items.reduce((sum, item) => sum + (item.qty * 300), 0));
+          },
+
+          get totalWeightKg() {
+              return (this.totalWeightGrams / 1000).toFixed(1);
+          },
+
+          get shippingCost() {
+              return this.selectedShippingService ? this.selectedShippingService.cost : 20000;
+          },
+
+          get grandTotal() {
+              return Math.max(0, this.rawSubtotal + this.shippingCost);
+          },
+
+          async fetchRajaOngkirCosts() {
+              let dest = this.addressData.cityId;
+              if (!dest && this.selectedAddressId) {
+                  const found = this.savedAddresses.find(a => a.id === Number(this.selectedAddressId));
+                  if (found && found.cityId) dest = found.cityId;
+              }
+              this.loadingShipping = true;
+              try {
+                  const res = await fetch('{{ route('rajaongkir.cost') }}', {
+                      method: 'POST',
+                      headers: {
+                          'Content-Type': 'application/json',
+                          'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                          'Accept': 'application/json'
+                      },
+                      body: JSON.stringify({
+                          destination: dest || 444,
+                          weight: this.totalWeightGrams,
+                          courier: ['jne', 'pos', 'tiki'],
+                          city_name: this.addressData.city || '',
+                          province_name: this.addressData.province || '',
+                          province_id: this.addressData.provinceId || null
+                      })
+                  });
+                  const data = await res.json();
+                  if (data.success && Array.isArray(data.services) && data.services.length > 0) {
+                      this.shippingServices = data.services;
+                      this.isRajaOngkirLive = !!data.is_live;
+                      if (!this.shippingServices.some(s => (s.code + '-' + s.service) === this.selectedShippingKey)) {
+                          this.selectedShippingKey = this.shippingServices[0].code + '-' + this.shippingServices[0].service;
+                      }
+                  }
+              } catch (e) {
+                  console.error('Failed fetching RajaOngkir cost', e);
+              } finally {
+                  this.loadingShipping = false;
+              }
+          },
+
+          formatRupiah(amount) {
+              return 'Rp ' + Number(amount).toLocaleString('id-ID');
+          },
+
+          // Submit Order to Database
+          submitOrder() {
+              if (!this.addressData.recipient || !this.addressData.phone || !this.addressData.address) {
+                  this.showToast('Mohon lengkapi alamat pengiriman terlebih dahulu.');
+                  this.openEditAddress();
+                  return;
+              }
+
+              // Metode Midtrans (VA, QRIS, Kartu Kredit) butuh user login
+              const isMidtransMethod = this.selectedPayment !== 'manual_bca';
+              const isLoggedIn = {{ Auth::check() ? 'true' : 'false' }};
+
+              if (isMidtransMethod && !isLoggedIn) {
+                  this.showToast('Silakan login terlebih dahulu untuk menggunakan metode pembayaran ini.');
+                  setTimeout(() => { window.location.href = '{{ route('login') }}'; }, 1800);
+                  return;
+              }
+
+              this.isSubmitting = true;
+              const selectedSvc = this.selectedShippingService;
+              const shippingLabel = selectedSvc ? (selectedSvc.code + ' - ' + selectedSvc.service + ' (' + selectedSvc.description + ')') : 'JNE Reguler';
+              const shippingPrice = selectedSvc ? selectedSvc.cost : 20000;
+
+              fetch('{{ route('checkout.store') }}', {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                      'Accept': 'application/json'
+                  },
+                  body: JSON.stringify({
+                      customer_name: this.addressData.recipient,
+                      phone: this.addressData.phone,
+                      address: this.fullAddress,
+                      city: this.addressData.city,
+                      province: this.addressData.province,
+                      city_id: this.addressData.cityId || null,
+                      province_id: this.addressData.provinceId || null,
+                      postal_code: this.addressData.postalCode,
+                      alamat_id: this.selectedAddressId,
+                      shipping_option: shippingLabel,
+                      shipping_cost: shippingPrice,
+                      payment_method: this.paymentMethodName,
+                      notes: this.sellerNotes
+                  })
+              })
+              .then(async res => {
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok || !data.success) {
+                      this.isSubmitting = false;
+                      const errorMsg = (data.errors ? Object.values(data.errors).flat()[0] : null) || data.message || 'Gagal memproses transaksi.';
+                      this.showToast(errorMsg);
+                      return;
+                  }
+
+                  // Langsung buka popup bawaan Midtrans bila token tersedia.
+                  if (data.snap_token && typeof window.snap !== 'undefined' && !String(data.snap_token).startsWith('MOCK_SNAP_')) {
+                      window.snap.pay(data.snap_token, {
+                          onSuccess: () => {
+                              window.location.href = '{{ route('midtrans.finish') }}?order_id=' + encodeURIComponent(data.order_code) + '&status=success';
+                          },
+                          onPending: () => {
+                              this.showToast('Menunggu pembayaran Anda diselesaikan.');
+                              setTimeout(() => {
+                                  window.location.href = '{{ route('pesanan.index') }}';
+                              }, 1500);
+                          },
+                          onError: () => {
+                              this.isSubmitting = false;
+                              this.showToast('Pembayaran gagal. Lanjutkan dari halaman pembayaran.');
+                              setTimeout(() => {
+                                  window.location.href = data.redirect_url || '{{ route('pesanan.index') }}';
+                              }, 1500);
+                          },
+                          onClose: () => {
+                              this.isSubmitting = false;
+                              this.showToast('Popup Midtrans ditutup. Lanjutkan kapan saja dari halaman pembayaran.');
+                              setTimeout(() => {
+                                  window.location.href = data.redirect_url || '{{ route('pesanan.index') }}';
+                              }, 1500);
+                          }
+                      });
+                      return;
+                  }
+                  window.location.href = data.redirect_url || '{{ route('pesanan.index') }}';
+              })
+              .catch(() => {
+                  this.isSubmitting = false;
+                  this.showToast('Terjadi kendala koneksi saat menghubungi server.');
+              });
+          }
+      }">
+
+    <!-- Toast Notification -->
+    <div x-cloak x-show="toastMessage" 
+         x-transition:enter="transition ease-out duration-300 transform"
+         x-transition:enter-start="opacity-0 translate-y-4"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-200 transform"
+         x-transition:leave-start="opacity-100 translate-y-0"
+         x-transition:leave-end="opacity-0 translate-y-4"
+         class="fixed bottom-6 right-6 z-50 bg-[#1F1916] text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 border border-stone-700">
+        <svg class="w-5 h-5 text-amber-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+        </svg>
+        <span x-text="toastMessage" class="text-sm font-medium"></span>
+    </div>
+
+    <!-- ================= MODAL UBAH / TAMBAH ALAMAT ================= -->
+    <div x-cloak x-show="editAddressModal" 
+         class="fixed inset-0 z-50 overflow-y-auto"
+         aria-labelledby="modal-title" role="dialog" aria-modal="true">
+        <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div x-show="editAddressModal" 
+                 x-transition:enter="ease-out duration-300"
+                 x-transition:enter-start="opacity-0"
+                 x-transition:enter-end="opacity-100"
+                 x-transition:leave="ease-in duration-200"
+                 x-transition:leave-start="opacity-100"
+                 x-transition:leave-end="opacity-0"
+                 @click="editAddressModal = false"
+                 class="fixed inset-0 bg-stone-900/60 backdrop-blur-xs transition-opacity"></div>
+
+            <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+
+            <div x-show="editAddressModal" 
+                 x-transition:enter="ease-out duration-300"
+                 x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                 x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave="ease-in duration-200"
+                 x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                 class="inline-block align-bottom bg-white rounded-3xl text-left overflow-hidden shadow-2xl transform transition-all sm:my-8 sm:align-middle sm:max-w-xl sm:w-full border border-stone-200">
+                
+                <!-- Modal Header -->
+                <div class="px-6 py-5 bg-[#FAF7F2] border-b border-[#ECE4D8] flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                        <button x-show="modalView === 'form' && savedAddresses.length > 0" 
+                                @click="modalView = 'list'" 
+                                type="button" 
+                                class="p-1.5 -ml-1 text-stone-500 hover:text-stone-900 rounded-lg hover:bg-stone-200/50 transition flex items-center gap-1 text-xs font-semibold mr-1"
+                                title="Kembali ke daftar alamat">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                            <span class="hidden sm:inline">Daftar</span>
+                        </button>
+                        <div>
+                            <h3 class="text-base font-bold text-stone-900 flex items-center gap-2">
+                                <span x-show="modalView === 'list'">Pilih Alamat Pengiriman</span>
+                                <span x-show="modalView === 'form'" x-text="formMode === 'edit' ? 'Ubah Alamat Pengiriman' : 'Tambah Alamat Baru'"></span>
+                            </h3>
+                            <p class="text-xs text-stone-500 mt-0.5">
+                                <span x-show="modalView === 'list'">Pilih alamat tersimpan atau tambahkan alamat baru</span>
+                                <span x-show="modalView === 'form'" x-text="formMode === 'edit' ? 'Perbarui informasi alamat pengiriman Anda' : 'Lengkapi data alamat untuk tujuan pesanan Anda'"></span>
+                            </p>
+                        </div>
+                    </div>
+                    <button @click="editAddressModal = false" class="p-1.5 text-stone-400 hover:text-stone-700 rounded-lg hover:bg-stone-200/50 transition">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+
+                <!-- ================= VIEW 1: DAFTAR ALAMAT TERSIMPAN ================= -->
+                <div x-show="modalView === 'list'" class="p-6 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold text-stone-800 uppercase tracking-wider">
+                            Pilih Alamat Tersimpan
+                        </h4>
+                        <span class="text-[11px] font-semibold text-stone-500" x-text="savedAddresses.length + ' alamat tersedia'"></span>
+                    </div>
+
+                    <div x-show="savedAddresses.length > 0" class="space-y-3 max-h-80 overflow-y-auto pr-1">
+                        <template x-for="addr in savedAddresses" :key="addr.id">
+                            <div :class="selectedAddressId === addr.id ? 'border-[#B58742] bg-[#FAF7F2] ring-2 ring-[#B58742]/20 shadow-xs' : 'border-stone-200 hover:border-stone-300 bg-white'"
+                                 class="p-4 rounded-2xl border transition-all flex flex-col gap-2.5">
+                                <div class="flex items-start justify-between gap-3">
+                                    <button @click="selectAddress(addr.id); editAddressModal = false; showToast('Alamat pengiriman berhasil dipilih!')" 
+                                            type="button" 
+                                            class="flex-1 text-left flex items-start gap-3">
+                                        <!-- Radio Selector Circle -->
+                                        <div class="mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition"
+                                             :class="selectedAddressId === addr.id ? 'border-[#B58742] bg-[#B58742]' : 'border-stone-300'">
+                                            <div x-show="selectedAddressId === addr.id" class="w-1.5 h-1.5 rounded-full bg-white"></div>
+                                        </div>
+
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <span class="font-bold text-sm text-stone-900" x-text="addr.penerima"></span>
+                                                <span class="px-2 py-0.5 rounded-md bg-[#201A17] text-[#E5C38E] text-[10px] font-bold uppercase tracking-wider" x-text="addr.label || 'Rumah'"></span>
+                                                <span x-show="addr.isUtama" class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">Utama</span>
+                                            </div>
+                                            <p class="text-xs text-stone-500 font-medium mt-0.5" x-text="addr.phone"></p>
+                                            <p class="text-xs text-stone-700 leading-relaxed mt-1" x-text="addr.address + (addr.city ? ', ' + addr.city : '') + (addr.province ? ', ' + addr.province : '') + (addr.postalCode ? ' ' + addr.postalCode : '')"></p>
+                                        </div>
+                                    </button>
+
+                                    <!-- Action Buttons -->
+                                    <div class="flex items-center gap-1.5 shrink-0 pt-0.5">
+                                        <button @click.stop="openEditSingleAddress(addr)" 
+                                                type="button" 
+                                                title="Ubah data alamat ini"
+                                                class="px-2.5 py-1 text-xs font-semibold text-stone-700 hover:text-stone-950 bg-white hover:bg-stone-100 rounded-lg transition border border-stone-200">
+                                            Ubah
+                                        </button>
+                                        <button @click.stop="deleteAddress(addr.id)" 
+                                                type="button" 
+                                                title="Hapus alamat ini" 
+                                                class="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Card Footer: Set Primary / Select -->
+                                <div class="flex items-center justify-between pt-2 border-t border-stone-100 text-xs">
+                                    <div>
+                                        <button x-show="!addr.isUtama" 
+                                                @click.stop="setPrimaryAddress(addr.id)" 
+                                                type="button" 
+                                                class="text-[11px] font-semibold text-stone-500 hover:text-[#B58742] transition underline">
+                                            Jadikan Alamat Utama
+                                        </button>
+                                        <span x-show="addr.isUtama" class="text-[11px] font-semibold text-emerald-700 flex items-center gap-1">
+                                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+                                            Alamat Utama Anda
+                                        </span>
+                                    </div>
+
+                                    <button @click="selectAddress(addr.id); editAddressModal = false; showToast('Alamat pengiriman berhasil dipilih!')"
+                                            type="button"
+                                            :class="selectedAddressId === addr.id ? 'bg-[#201A17] text-white' : 'bg-white hover:bg-stone-100 text-stone-800 border border-stone-200'"
+                                            class="px-3.5 py-1 rounded-xl text-xs font-bold transition">
+                                        <span x-text="selectedAddressId === addr.id ? '✓ Dipilih' : 'Gunakan Alamat'"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Button Tambah Alamat Baru -->
+                    <button @click="openAddAddress()" type="button"
+                            class="w-full py-3.5 rounded-2xl border-2 border-dashed border-stone-300 hover:border-[#B58742] hover:bg-[#FAF7F2] text-stone-700 hover:text-stone-900 text-xs font-bold transition flex items-center justify-center gap-2">
+                        <span class="w-5 h-5 rounded-full bg-amber-100 text-[#B58742] flex items-center justify-center font-bold text-sm leading-none">+</span>
+                        Tambah Alamat Baru
+                    </button>
+                </div>
+
+                <!-- ================= VIEW 2: FORM TAMBAH / UBAH ALAMAT ================= -->
+                <div x-show="modalView === 'form'" class="p-6 space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Nama Penerima <span class="text-rose-500">*</span>
+                            </label>
+                            <input type="text" 
+                                   x-model="tempAddress.recipient"
+                                   @input="tempAddress.recipient = tempAddress.recipient.replace(/[^a-zA-Z\s\'.()\-]/g, '')"
+                                   placeholder="Nama lengkap penerima"
+                                   class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Label Alamat
+                            </label>
+                            <input type="text" 
+                                   x-model="tempAddress.label"
+                                   @input="tempAddress.label = tempAddress.label.replace(/[^a-zA-Z0-9\s.\-()]/g, '')"
+                                   placeholder="Contoh: Rumah, Kantor, Kos"
+                                   class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Nomor WhatsApp / HP <span class="text-rose-500">*</span>
+                            </label>
+                            <input type="tel" 
+                                   inputmode="numeric"
+                                   maxlength="20"
+                                   x-model="tempAddress.phone"
+                                   @input="tempAddress.phone = tempAddress.phone.replace(/[^0-9+\- ]/g, '')"
+                                   placeholder="Contoh: 081234567890 atau +62812..."
+                                   class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Kode Pos
+                            </label>
+                            <input type="text"
+                                   inputmode="numeric"
+                                   maxlength="5"
+                                   x-model="tempAddress.postalCode"
+                                   @input="tempAddress.postalCode = tempAddress.postalCode.replace(/[^0-9]/g, '')"
+                                   placeholder="Contoh: 51111 (5 digit)"
+                                   class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Provinsi <span class="text-rose-500">*</span>
+                            </label>
+                            <select x-model="tempAddress.provinceId" @change="onCheckoutProvinceChange()"
+                                    class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40">
+                                <option value="" x-text="loadingProvinces ? 'Memuat provinsi...' : '-- Pilih Provinsi --'">-- Pilih Provinsi --</option>
+                                <template x-for="p in provincesList" :key="p.province_id">
+                                    <option :value="p.province_id" x-text="p.province" :selected="String(p.province_id) === String(tempAddress.provinceId)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                                Kabupaten / Kota <span class="text-rose-500">*</span>
+                            </label>
+                            <select x-model="tempAddress.cityId" @change="onCheckoutCityChange()" :disabled="!tempAddress.provinceId || loadingCities"
+                                    class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40 disabled:opacity-50">
+                                <option value="" x-text="loadingCities ? 'Memuat kota...' : (tempAddress.provinceId ? '-- Pilih Kabupaten/Kota --' : '-- Pilih Provinsi Dulu --')">-- Pilih Kabupaten/Kota --</option>
+                                <template x-for="c in citiesList" :key="c.city_id">
+                                    <option :value="c.city_id" x-text="(c.type ? c.type + ' ' : '') + c.city_name" :selected="String(c.city_id) === String(tempAddress.cityId)"></option>
+                                </template>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-stone-800 uppercase tracking-wider mb-1.5">
+                            Alamat Lengkap <span class="text-rose-500">*</span>
+                        </label>
+                        <textarea x-model="tempAddress.address"
+                                  @input="tempAddress.address = tempAddress.address.replace(/[^a-zA-Z0-9\s.,\/\-()\[\]#&\'\":;]/g, '')"
+                                  rows="3"
+                                  placeholder="Nama Jalan, Nomor Gedung/Rumah, RT/RW, Kelurahan, Kecamatan, Patokan"
+                                  class="w-full px-3.5 py-2.5 rounded-xl border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#B58742] bg-[#FAF7F2]/40"></textarea>
+                    </div>
+
+                    <div class="pt-1">
+                        <label class="flex items-center gap-2.5 cursor-pointer">
+                            <input type="checkbox" 
+                                   x-model="tempAddress.isUtama"
+                                   class="w-4 h-4 rounded text-[#B58742] focus:ring-[#B58742] border-stone-300">
+                            <span class="text-xs font-semibold text-stone-700">Jadikan sebagai alamat utama</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Modal Footer -->
+                <div class="px-6 py-4 bg-stone-50 border-t border-stone-200 flex items-center justify-between">
+                    <button x-show="modalView === 'list'" 
+                            @click="editAddressModal = false" 
+                            type="button"
+                            class="px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 transition">
+                        Tutup
+                    </button>
+                    <button x-show="modalView === 'form'" 
+                            @click="savedAddresses.length > 0 ? modalView = 'list' : editAddressModal = false" 
+                            type="button"
+                            class="px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 transition">
+                        Batal
+                    </button>
+
+                    <button x-show="modalView === 'form'" 
+                            @click="saveAddress()" 
+                            :disabled="modalSaving"
+                            type="button"
+                            class="px-6 py-2.5 text-xs font-bold text-white bg-[#201A17] hover:bg-stone-800 disabled:opacity-60 rounded-xl transition shadow-md flex items-center gap-2">
+                        <svg x-show="modalSaving" class="animate-spin -ml-1 mr-1 h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                        </svg>
+                        <span x-text="modalSaving ? 'Menyimpan...' : 'Simpan & Gunakan'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= NAVBAR ================= -->
+    <x-storefront-navbar />
+
+    <!-- ================= MAIN CHECKOUT CONTENT ================= -->
+    <main class="py-8 sm:py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            
+            <!-- Page Header & Stepper matching Screenshot -->
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-8 border-b border-[#ECE4D8]/80 mb-8 sm:mb-10">
+                <div>
+                    <span class="text-[11px] font-bold uppercase tracking-widest text-[#B58742] block mb-1.5">
+                        PESANAN TERKURASI
+                    </span>
+                    <h1 class="font-serif-title text-3xl sm:text-4xl lg:text-5xl font-extrabold text-stone-900">
+                        Selesaikan Pembayaran
+                    </h1>
+                </div>
+
+                <!-- Stepper Progress Bar -->
+                <div class="flex items-center gap-2 sm:gap-3 text-xs font-semibold">
+                    <!-- Step 1: Keranjang (Completed) -->
+                    <a href="{{ route('keranjang.index') }}" class="flex items-center gap-1.5 text-stone-500 hover:text-stone-800 transition">
+                        <span class="w-5 h-5 rounded-full bg-stone-200 text-stone-700 flex items-center justify-center text-[10px] font-bold">✓</span>
+                        <span>Keranjang</span>
+                    </a>
+
+                    <span class="w-6 h-px bg-stone-300"></span>
+
+                    <!-- Step 2: Pengiriman & Pembayaran (Active) -->
+                    <div class="flex items-center gap-1.5 text-stone-900 font-bold">
+                        <span class="w-5 h-5 rounded-full bg-[#201A17] text-white flex items-center justify-center text-[10px]">2</span>
+                        <span>Pengiriman & Pembayaran</span>
+                    </div>
+
+                    <span class="w-6 h-px bg-stone-300"></span>
+
+                    <!-- Step 3: Selesai (Next) -->
+                    <div class="flex items-center gap-1.5 text-stone-400">
+                        <span class="w-5 h-5 rounded-full bg-stone-200 text-stone-400 flex items-center justify-center text-[10px]">3</span>
+                        <span>Selesai</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Layout Grid: Left (8 Cols) & Right (4 Cols) -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
+                
+                <!-- Left Column: Address, Order Items, Shipping, Payment (8 Cols) -->
+                <div class="lg:col-span-8 space-y-6">
+
+                    <!-- ================= CARD 1: ALAMAT PENGIRIMAN ================= -->
+                    <div class="bg-white rounded-3xl p-6 sm:p-7 border border-[#EDE6DB] shadow-sm">
+                        <div class="flex items-center justify-between pb-4 border-b border-stone-100 mb-5">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-8 h-8 rounded-full bg-[#FAF4ED] text-[#9E6A38] flex items-center justify-center shrink-0">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <h2 class="font-bold text-base sm:text-lg text-stone-900 leading-tight">
+                                        Alamat Pengiriman
+                                    </h2>
+                                    <p class="text-[11px] text-stone-500">Tujuan pengiriman pesanan Anda</p>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-2">
+                                <button @click="openEditAddress()" 
+                                        type="button"
+                                        class="px-3.5 py-1.5 rounded-full border border-stone-300 hover:border-[#B58742] hover:text-[#B58742] text-xs font-semibold text-stone-700 bg-white shadow-2xs transition flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-stone-400 group-hover:text-[#B58742]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                    <span>Ubah Alamat</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Address Info Box: data asli milik customer -->
+                        <div x-show="addressData.address" class="p-4 sm:p-5 rounded-2xl bg-[#FAF7F2] border border-[#ECE4D8] space-y-2.5">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <span class="px-2 py-0.5 rounded-md bg-[#201A17] text-[#E5C38E] text-[10px] font-bold uppercase tracking-wider" x-text="addressData.label || 'Rumah'"></span>
+                                    <span class="font-bold text-stone-900 text-sm" x-text="addressData.recipient"></span>
+                                    <span class="text-stone-300 font-normal">|</span>
+                                    <span x-text="addressData.phone" class="font-semibold text-stone-700 text-xs"></span>
+                                </div>
+
+                                <div class="flex items-center gap-2">
+                                    <span x-show="addressData.isUtama" class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">
+                                        Alamat Utama
+                                    </span>
+                                    <button @click="openAddAddress()" type="button" class="text-[11px] font-semibold text-[#B58742] hover:underline">
+                                        + Tambah Baru
+                                    </button>
+                                </div>
+                            </div>
+
+                            <p class="text-xs sm:text-sm text-stone-700 leading-relaxed font-normal" x-text="fullAddress"></p>
+
+                            <div class="pt-1 flex flex-wrap items-center justify-between gap-2 border-t border-[#ECE4D8]/60 text-[11px] text-stone-500">
+                                <span>Pastikan nomor WhatsApp / HP aktif untuk konfirmasi kurir pengiriman.</span>
+                                <a href="{{ route('alamat.index') }}" class="font-bold text-stone-700 hover:text-stone-950 underline transition">
+                                    Kelola alamat tersimpan →
+                                </a>
+                            </div>
+                        </div>
+
+                        <!-- Empty state: customer belum punya alamat -->
+                        <div x-show="!addressData.address" class="p-6 rounded-2xl bg-amber-50/50 border border-dashed border-amber-300 text-center space-y-3">
+                            <div class="w-10 h-10 rounded-full bg-amber-100 text-amber-800 mx-auto flex items-center justify-center">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                            </div>
+                            <div>
+                                <p class="font-bold text-sm text-stone-900">Belum Ada Alamat Pengiriman</p>
+                                <p class="text-xs text-stone-500 mt-0.5">Silakan isi alamat tujuan Anda agar pesanan dapat diproses dan dikirimkan.</p>
+                            </div>
+                            <div class="pt-1">
+                                <button @click="openAddAddress()" type="button" class="px-5 py-2.5 rounded-xl bg-[#201A17] hover:bg-stone-800 text-white text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5">
+                                    <span>+</span> Isi Alamat Pengiriman
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ================= CARD 2: PRODUK YANG DIBELI (RINGKAS) ================= -->
+                    <div class="bg-white rounded-3xl p-6 sm:p-7 border border-[#EDE6DB] shadow-sm">
+                        <div class="flex items-center justify-between pb-4 border-b border-stone-100 mb-5">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-8 h-8 rounded-full bg-[#FAF4ED] text-[#9E6A38] flex items-center justify-center shrink-0">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5V6a3.75 3.75 0 10-7.5 0v4.5m11.356-1.993l1.263 12c.07.665-.45 1.243-1.119 1.243H4.25c-.669 0-1.189-.578-1.119-1.243l1.263-12A1.125 1.125 0 015.513 7.5h12.974c.576 0 1.059.435 1.119 1.007zM8.625 10.5a.375.375 0 11-.75 0 .375.375 0 01.75 0zm7.5 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+                                    </svg>
+                                </div>
+                                <h2 class="font-bold text-base sm:text-lg text-stone-900">
+                                    Produk yang Dibeli (Ringkas)
+                                </h2>
+                            </div>
+
+                            <span class="text-xs font-semibold text-stone-500" x-text="items.length + ' Macam Koleksi'">
+                                3 Macam Koleksi
+                            </span>
+                        </div>
+
+                        <!-- Product Items List -->
+                        <div class="divide-y divide-stone-100">
+                            <template x-for="item in items" :key="item.id">
+                                <div class="py-4 first:pt-0 last:pb-0 flex items-center justify-between gap-4">
+                                    <div class="flex items-center gap-3.5 min-w-0">
+                                        <img :src="item.gambar" 
+                                             :alt="item.nama"
+                                             class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover bg-stone-100 border border-stone-200 shrink-0">
+                                        <div class="min-w-0 space-y-1">
+                                            <span class="text-[11px] font-semibold text-stone-500 block truncate" x-text="item.varian"></span>
+                                            <h3 class="font-bold text-sm sm:text-base text-stone-900 truncate" x-text="item.nama"></h3>
+                                            <span class="text-xs text-stone-400 block" x-text="item.qty + 'x ' + (item.qty > 1 ? 'unit (' + formatRupiah(item.harga) + '/unit)' : 'potong')"></span>
+                                        </div>
+                                    </div>
+
+                                    <div class="text-right shrink-0">
+                                        <span class="font-serif-title font-bold text-base sm:text-lg text-stone-900" x-text="formatRupiah(item.harga * item.qty)"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- Catatan untuk Penjual -->
+                        <div class="mt-6 pt-5 border-t border-stone-100">
+                            <label class="block text-[11px] font-bold text-stone-800 uppercase tracking-wider mb-2">
+                                Catatan untuk Penjual
+                            </label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-stone-400">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125"/>
+                                    </svg>
+                                </span>
+                                <input type="text" 
+                                       x-model="sellerNotes"
+                                       maxlength="250"
+                                       @input="sellerNotes = sellerNotes.replace(/[^a-zA-Z0-9\s.,\'\-()\/!?]/g, '')"
+                                       placeholder="Contoh: Mohon sertakan kartu ucapan kado (maksimal 250 karakter)"
+                                       class="w-full pl-10 pr-4 py-3 rounded-2xl border border-stone-200 text-xs sm:text-sm text-stone-800 bg-[#FAF7F2]/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#B58742]/40 focus:border-[#B58742] transition placeholder-stone-400">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ================= CARD 3: OPSI PENGIRIMAN (RAJAONGKIR) ================= -->
+                    <div class="bg-white rounded-3xl p-6 sm:p-7 border border-[#EDE6DB] shadow-sm">
+                        <div class="pb-4 border-b border-stone-100 mb-5">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <div class="flex items-center gap-2.5">
+                                    <div class="w-8 h-8 rounded-full bg-[#FAF4ED] text-[#9E6A38] flex items-center justify-center shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.25V4.875A1.125 1.125 0 0013.125 3.75h-7.5A1.125 1.125 0 004.5 4.875v9.375m9 0V9.75" />
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h2 class="font-bold text-base sm:text-lg text-stone-900 flex items-center gap-2">
+                                            <span>Opsi Pengiriman</span>
+                                            <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full"
+                                                  :class="isRajaOngkirLive ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'"
+                                                  x-text="isRajaOngkirLive ? 'RajaOngkir Live' : 'RajaOngkir Standar'"></span>
+                                        </h2>
+                                        <p class="text-xs text-stone-500 mt-0.5">
+                                            Dari <span class="font-semibold text-stone-700">Surakarta (Solo)</span> &bull; Berat paket: <span class="font-semibold text-stone-700" x-text="totalWeightGrams + ' gr (~' + totalWeightKg + ' kg)'"></span>
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <!-- Filter Tab Kurir -->
+                                <div class="flex items-center gap-1 bg-stone-100 p-1 rounded-xl text-xs font-bold">
+                                    <button type="button" @click="courierFilter = 'all'"
+                                            :class="courierFilter === 'all' ? 'bg-white text-stone-900 shadow-2xs' : 'text-stone-500 hover:text-stone-800'"
+                                            class="px-2.5 py-1 rounded-lg transition cursor-pointer">Semua</button>
+                                    <button type="button" @click="courierFilter = 'JNE'"
+                                            :class="courierFilter === 'JNE' ? 'bg-white text-stone-900 shadow-2xs' : 'text-stone-500 hover:text-stone-800'"
+                                            class="px-2.5 py-1 rounded-lg transition cursor-pointer">JNE</button>
+                                    <button type="button" @click="courierFilter = 'POS'"
+                                            :class="courierFilter === 'POS' ? 'bg-white text-stone-900 shadow-2xs' : 'text-stone-500 hover:text-stone-800'"
+                                            class="px-2.5 py-1 rounded-lg transition cursor-pointer">POS</button>
+                                    <button type="button" @click="courierFilter = 'TIKI'"
+                                            :class="courierFilter === 'TIKI' ? 'bg-white text-stone-900 shadow-2xs' : 'text-stone-500 hover:text-stone-800'"
+                                            class="px-2.5 py-1 rounded-lg transition cursor-pointer">TIKI</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Loading State -->
+                        <div x-show="loadingShipping" class="py-8 text-center text-xs text-stone-500 flex flex-col items-center justify-center gap-2">
+                            <div class="w-6 h-6 border-2 border-stone-300 border-t-[#B58742] rounded-full animate-spin"></div>
+                            <span>Menghitung ongkos kirim real-time...</span>
+                        </div>
+
+                        <!-- Courier Options Grid -->
+                        <div x-show="!loadingShipping" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                            <template x-for="service in filteredShippingServices" :key="service.code + '-' + service.service">
+                                <div @click="selectedShippingKey = service.code + '-' + service.service"
+                                     :class="(selectedShippingKey === (service.code + '-' + service.service))
+                                         ? 'bg-[#201A17] text-white border-[#201A17] shadow-md ring-2 ring-[#B58742]/50' 
+                                         : 'bg-[#FAF7F2] text-stone-800 border-stone-200 hover:border-stone-400'"
+                                     class="rounded-2xl p-4 sm:p-5 border cursor-pointer transition-all duration-200 flex flex-col justify-between">
+                                    <div>
+                                        <div class="flex items-center justify-between mb-3">
+                                            <div class="px-2.5 py-1 rounded-lg text-xs font-black tracking-wider uppercase"
+                                                 :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'bg-stone-800 text-[#E5C38E]' : 'bg-white text-stone-800 shadow-2xs border border-stone-200/80'"
+                                                 x-text="service.code">
+                                            </div>
+                                            <div class="w-4 h-4 rounded-full border-2 flex items-center justify-center"
+                                                 :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'border-amber-400 bg-amber-400' : 'border-stone-300'">
+                                                <div x-show="selectedShippingKey === (service.code + '-' + service.service)" class="w-1.5 h-1.5 rounded-full bg-[#201A17]"></div>
+                                            </div>
+                                        </div>
+                                        <h3 class="font-bold text-sm" :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'text-white' : 'text-stone-900'">
+                                            <span x-text="service.code + ' ' + service.service"></span>
+                                        </h3>
+                                        <p class="text-[11px] mt-0.5 leading-snug line-clamp-1" :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'text-stone-300' : 'text-stone-500'"
+                                           x-text="service.description">
+                                        </p>
+                                        <p class="text-[11px] mt-1.5 font-medium" :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'text-amber-300' : 'text-stone-600'">
+                                            Estimasi: <span class="font-bold" x-text="service.etd"></span>
+                                        </p>
+                                    </div>
+                                    <div class="mt-4 pt-3 flex items-center justify-between border-t"
+                                         :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'border-stone-700' : 'border-stone-200/60'">
+                                        <span class="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded"
+                                              :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'bg-stone-800 text-stone-300' : 'bg-stone-200/60 text-stone-600'">
+                                            TARIF
+                                        </span>
+                                        <span class="font-bold text-xs sm:text-sm" :class="(selectedShippingKey === (service.code + '-' + service.service)) ? 'text-white' : 'text-stone-900'"
+                                              x-text="formatRupiah(service.cost)">
+                                        </span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- ================= CARD 4: METODE PEMBAYARAN ================= -->
+                    <div class="bg-white rounded-3xl p-6 sm:p-7 border border-[#EDE6DB] shadow-sm">
+                        <div class="flex items-center justify-between pb-4 border-b border-stone-100 mb-5">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-8 h-8 rounded-full bg-[#FAF4ED] text-[#9E6A38] flex items-center justify-center shrink-0">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
+                                    </svg>
+                                </div>
+                                <h2 class="font-bold text-base sm:text-lg text-stone-900">
+                                    Metode Pembayaran
+                                </h2>
+                            </div>
+
+                            <div class="flex items-center gap-1.5 text-xs text-stone-500 font-semibold">
+                                <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                                </svg>
+                                <span>Enkripsi 256-bit</span>
+                            </div>
+                        </div>
+
+                        <!-- Pembayaran tunggal via Midtrans (metode dipilih di popup Snap) -->
+                        <div class="p-4 sm:p-5 rounded-2xl border border-[#B58742] bg-[#FAF7F2] ring-2 ring-[#B58742]/30 flex items-start gap-3">
+                            <div class="mt-0.5 w-9 h-9 rounded-xl bg-[#201A17] text-[#E5C38E] flex items-center justify-center shrink-0">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
+                                </svg>
+                            </div>
+                            <div class="flex-1">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <span class="font-bold text-sm text-stone-900">Midtrans Payment Gateway</span>
+                                    <span class="px-2 py-0.5 rounded-full bg-[#201A17] text-white text-[10px] font-bold">Otomatis</span>
+                                </div>
+                                <p class="text-xs text-stone-500 mt-1">
+                                    Virtual Account, QRIS, E-Wallet, dan Kartu Kredit/Debit. Metode pembayaran dipilih pada jendela Midtrans setelah checkout — terverifikasi instan tanpa unggah bukti transfer.
+                                </p>
+                                <div class="hidden sm:flex items-center gap-1.5 mt-2.5">
+                                    <span class="px-2 py-0.5 rounded bg-white text-[10px] font-extrabold text-blue-900 border border-stone-200">BCA</span>
+                                    <span class="px-2 py-0.5 rounded bg-white text-[10px] font-extrabold text-amber-800 border border-stone-200">MANDIRI</span>
+                                    <span class="px-2 py-0.5 rounded bg-white text-[10px] font-extrabold text-orange-700 border border-stone-200">BNI</span>
+                                    <span class="px-2 py-0.5 rounded bg-white text-[10px] font-extrabold text-stone-700 border border-stone-200">QRIS</span>
+                                    <span class="px-2 py-0.5 rounded bg-white text-[10px] font-extrabold text-stone-700 border border-stone-200">VISA</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Right Column: Sticky Ringkasan Pesanan (4 Cols) -->
+                <div class="lg:col-span-4 sticky top-28 space-y-5">
+                    
+                    <!-- Ringkasan Belanja Card matching Mockup -->
+                    <div class="bg-white rounded-3xl p-6 sm:p-7 border border-[#EDE6DB] shadow-md space-y-6">
+                        
+                        <div class="flex items-center justify-between pb-4 border-b border-stone-100">
+                            <div>
+                                <span class="text-[10px] font-bold uppercase tracking-wider text-stone-400 block mb-0.5">
+                                    RINGKASAN BELANJA
+                                </span>
+                                <h2 class="font-bold text-stone-900 text-lg">
+                                    Ringkasan Pesanan
+                                </h2>
+                            </div>
+                            <a href="{{ route('keranjang.index') }}" 
+                               class="p-2 text-stone-400 hover:text-stone-700 rounded-lg hover:bg-stone-100 transition"
+                               title="Edit Isi Keranjang">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125"/>
+                                </svg>
+                            </a>
+                        </div>
+
+                        <!-- Rows Breakdown matching Mockup exactly -->
+                        <div class="space-y-3.5 text-xs sm:text-sm text-stone-600">
+                            
+                            <div class="flex items-center justify-between">
+                                <span x-text="'Subtotal Produk (' + totalItemQty + ' Item)'">Subtotal Produk (4 Item)</span>
+                                <span class="font-bold text-stone-900" x-text="formatRupiah(rawSubtotal)">Rp 900.000</span>
+                            </div>
+
+                            <div class="flex items-center justify-between">
+                                <span class="flex items-center gap-1">
+                                    <span>Total Ongkos Kirim</span>
+                                    <svg class="w-3.5 h-3.5 text-stone-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                </span>
+                                <span class="font-bold text-stone-900" x-text="formatRupiah(shippingCost)">Rp 20.000</span>
+                            </div>
+
+                        </div>
+
+                        <!-- Divider with center dot -->
+                        <div class="relative flex items-center justify-center my-2">
+                            <div class="w-full border-t border-stone-200"></div>
+                            <div class="absolute w-2 h-2 rounded-full bg-stone-300"></div>
+                        </div>
+
+                        <!-- Total Tagihan Section -->
+                        <div class="flex items-baseline justify-between pt-1">
+                            <div>
+                                <span class="text-xs font-extrabold uppercase tracking-wider text-stone-800 block">
+                                    TOTAL TAGIHAN
+                                </span>
+                                <span class="text-[11px] text-stone-400">
+                                    Sudah termasuk PPN
+                                </span>
+                            </div>
+                            <span class="font-serif-title text-2xl sm:text-3xl font-extrabold text-stone-900" 
+                                  x-text="formatRupiah(grandTotal)">
+                                Rp 871.000
+                            </span>
+                        </div>
+
+                        <!-- Main Checkout CTA Button matching Mockup -->
+                        <button @click="submitOrder()" 
+                                :disabled="isSubmitting || items.length === 0"
+                                class="w-full py-4 px-6 rounded-2xl bg-[#201A17] hover:bg-stone-800 disabled:opacity-60 text-white font-bold text-sm transition duration-200 shadow-md flex items-center justify-center gap-2 group cursor-pointer">
+                            <span x-show="!isSubmitting" class="flex items-center gap-2">
+                                <span>🔒</span>
+                                <span>Bayar Sekarang</span>
+                            </span>
+                            <span x-show="isSubmitting" class="flex items-center gap-2">
+                                <svg class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span>Memproses Transaksi...</span>
+                            </span>
+                        </button>
+
+                        <!-- Legal & Sustainability Disclaimer -->
+                        <p class="text-[11px] text-stone-500 text-center leading-relaxed px-2">
+                            Dengan menekan Bayar Sekarang, Anda menyetujui Syarat & Ketentuan serta komitmen pelestarian warisan daya Official.
+                        </p>
+
+                    </div>
+
+                    <!-- Butuh Bantuan Checkout? WhatsApp Card matching Mockup -->
+                    <div class="bg-[#FAF7F2] rounded-3xl p-5 border border-[#EDE6DB] flex items-center justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-2xl bg-white border border-stone-200 text-emerald-600 flex items-center justify-center shrink-0 shadow-2xs">
+                                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                                    <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.462-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <h4 class="font-bold text-xs sm:text-sm text-stone-900">
+                                    Butuh Bantuan Checkout?
+                                </h4>
+                                <p class="text-[11px] text-stone-500 leading-tight">
+                                    Layanan pendampingan pesanan anda via WhatsApp
+                                </p>
+                            </div>
+                        </div>
+
+                        <a href="https://wa.me/6281234567890?text=Halo%20Admin%20Hamzah%20Style,%20saya%20butuh%20bantuan%20untuk%20checkout%20pesanan"
+                           target="_blank"
+                           class="px-4 py-2 rounded-xl bg-white hover:bg-stone-50 border border-stone-200 text-stone-800 font-bold text-xs transition shadow-2xs shrink-0">
+                            Chat
+                        </a>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+    </main>
+
+    <!-- ================= FOOTER ================= -->
+    <x-storefront-footer />
+
+</body>
+</html>
