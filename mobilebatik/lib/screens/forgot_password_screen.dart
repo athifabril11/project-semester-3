@@ -5,6 +5,8 @@ import '../theme/app_theme.dart';
 import '../utils/responsive.dart';
 import '../widgets/batik_header_logo.dart';
 import '../widgets/custom_text_field.dart';
+import '../services/auth_service.dart';
+import '../services/api_client.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -20,14 +22,42 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   bool _isSent = false;
 
   void _handleSendReset() async {
-    if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
-      await Future.delayed(const Duration(milliseconds: 1000));
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await AuthService.instance.forgotPassword(
+        email: _emailController.text.trim(),
+      );
+
       if (!mounted) return;
+
       setState(() {
         _isLoading = false;
         _isSent = true;
       });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Terjadi kesalahan. Silakan coba lagi.'),
+        ),
+      );
     }
   }
 

@@ -46,6 +46,14 @@ class AuthService {
     return res;
   }
 
+  Future<Map<String, dynamic>> forgotPassword({required String email}) async {
+    return await ApiClient.instance.post(
+      '/forgot-password',
+      auth: false,
+      body: {'email': email.trim()},
+    );
+  }
+
   Future<Map<String, dynamic>> register({
     required String name,
     required String email,
